@@ -8,7 +8,7 @@ export default defineConfig({
   server: {
     proxy: {
       "/api": {
-        target: "https://rul-backend.onrender.com",
+        target: "https://rul-3tso.onrender.com",
         changeOrigin: true,
         secure: false,
         rewrite: (path) => path.replace(/^\/api/, "")
