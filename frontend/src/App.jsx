@@ -39,7 +39,7 @@ export default function App(){
     setResult(null);
     try {
       const payload = { features: inputs, X_cycles: Number(Xcycles), sigma: Number(sigma) };
-      const resp = await axios.post("/api/predict", payload);
+      const resp = await axios.post("https://rul-3tso.onrender.com/predict", payload);
       setResult(resp.data);
     } catch(err){
       console.error(err);
