@@ -22,28 +22,30 @@ MODEL_PATHS = {
     "extra_model": "./model.pkl"  # optional
 }
 
-# store models here
-MODELS = {}
+MODELS: Dict[str, object] = {}
 MODEL_ACCURACIES = {
     "rul_model": 0.86,
     "lightgbm_model": 0.91,
     "extra_model": 0.83
 }
 
-# --- Load all models on startup ---
+# --- Load all models ---
 def load_all_models():
+    loaded = []
     for name, path in MODEL_PATHS.items():
         if os.path.exists(path):
             try:
                 with open(path, "rb") as f:
                     MODELS[name] = pickle.load(f)
+                    loaded.append(name)
                     print(f"✅ Loaded {name} from {path}")
             except Exception as e:
                 print(f"⚠️ Failed to load {name} from {path}: {e}")
         else:
             print(f"⚠️ Model not found at {path}")
+    print(f"📦 Models loaded: {loaded or 'None'}")
 
-# Probability helper
+# --- Probability helper ---
 def failure_probability(pred_rul: float, X_cycles: float, sigma: float) -> float:
     if sigma <= 0:
         return 1.0 if pred_rul <= X_cycles else 0.0
@@ -57,7 +59,7 @@ class PredictRequest(BaseModel):
     sigma: Optional[float] = 20.0
 
 class PredictResponse(BaseModel):
-    model_predictions: Dict[str, float]
+    model_predictions: Dict[str, Optional[float]]
     final_weighted_accuracy: float
     highest_accuracy_model: Dict[str, float]
     lowest_accuracy_model: Dict[str, float]
@@ -76,48 +78,61 @@ def root():
 def metadata():
     return {"features": FEATURES, "models_loaded": list(MODELS.keys())}
 
+@app.get("/status")
+def status():
+    """Check if models are loaded successfully"""
+    return {
+        "models_loaded": list(MODELS.keys()),
+        "model_files_present": {k: os.path.exists(v) for k, v in MODEL_PATHS.items()}
+    }
+
 @app.post("/predict", response_model=PredictResponse)
 def predict(req: PredictRequest):
     if not MODELS:
         raise HTTPException(status_code=500, detail="No models loaded on server.")
 
-    # prepare input feature vector
+    # prepare feature vector
     x = [float(req.features.get(f, 0.0)) for f in FEATURES]
     X_arr = np.array(x).reshape(1, -1)
 
-    # predictions from each model
-    predictions = {}
+    # collect predictions
+    predictions: Dict[str, Optional[float]] = {}
     for name, model in MODELS.items():
         try:
             pred = model.predict(X_arr)
-            pred_value = float(pred[0]) if hasattr(pred, "__len__") else float(pred)
-            predictions[name] = pred_value
+            value = float(pred[0]) if hasattr(pred, "__len__") else float(pred)
+            predictions[name] = value
         except Exception as e:
-            predictions[name] = None
             print(f"⚠️ Prediction failed for {name}: {e}")
+            predictions[name] = None
 
-    # Compute weighted accuracy
-    valid_accuracies = {k: v for k, v in MODEL_ACCURACIES.items() if k in predictions and predictions[k] is not None}
-    if not valid_accuracies:
+    # filter valid ones
+    valid_preds = {k: v for k, v in predictions.items() if v is not None}
+    valid_accs = {k: MODEL_ACCURACIES[k] for k in valid_preds.keys() if k in MODEL_ACCURACIES}
+
+    if not valid_preds:
         raise HTTPException(status_code=500, detail="No valid model predictions available.")
 
-    total_acc = sum(valid_accuracies.values())
-    weights = {k: v / total_acc for k, v in valid_accuracies.items()}
-    final_weighted_accuracy = sum(weights[k] * valid_accuracies[k] for k in valid_accuracies)
+    # compute weights
+    total_acc = sum(valid_accs.values())
+    weights = {k: v / total_acc for k, v in valid_accs.items()}
 
-    # find best and worst
-    highest = max(valid_accuracies.items(), key=lambda kv: kv[1])
-    lowest = min(valid_accuracies.items(), key=lambda kv: kv[1])
+    # weighted average of accuracies
+    final_weighted_accuracy = round(sum(weights[k] * valid_accs[k] for k in valid_accs), 4)
 
-    # choose one model (e.g., highest) for failure probability
-    best_pred = predictions.get(highest[0], 0)
+    # best and worst
+    highest = max(valid_accs.items(), key=lambda kv: kv[1])
+    lowest = min(valid_accs.items(), key=lambda kv: kv[1])
+
+    # probability calculation from best model
+    best_pred = valid_preds.get(highest[0], 0.0)
     prob = failure_probability(best_pred, req.X_cycles, req.sigma)
 
     return PredictResponse(
         model_predictions=predictions,
-        final_weighted_accuracy=round(final_weighted_accuracy, 4),
+        final_weighted_accuracy=final_weighted_accuracy,
         highest_accuracy_model={"name": highest[0], "accuracy": highest[1]},
         lowest_accuracy_model={"name": lowest[0], "accuracy": lowest[1]},
         used_features=FEATURES,
-        probability_failure_within_X=prob
+        probability_failure_within_X=round(prob, 4)
     )
