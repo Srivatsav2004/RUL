@@ -136,3 +136,7 @@ def predict(req: PredictRequest):
         used_features=FEATURES,
         probability_failure_within_X=round(prob, 4)
     )
+
+# main.py bottom
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
